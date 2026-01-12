@@ -7,24 +7,25 @@ class GameClient:
         print("Client started, listening for offer requests...")
         
     def listen_for_offers(self):
-        # לולאה אינסופית כדי שהלקוח יחזור להקשיב אחרי כל משחק
+        # Infinite loop to ensure the client returns to listening mode after a game finishes
         while True:
             udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             udp_socket.bind(('', UDP_PORT))
 
             try:
-                # האזנה להצעה
+                # Listen for UDP broadcast offers
                 data, addr = udp_socket.recvfrom(1024)
                 result = unpack_offer(data)
                 
                 if result:
                     server_port, server_name = result
                     print(f"Received offer from {server_name} at address {addr[0]}, attempting to connect...")
-                    # סוגרים את ה-UDP לפני שמתחילים לשחק
+                    
+                    # Close the UDP socket before starting the TCP connection
                     udp_socket.close()
                     
-                    # מתחברים לשרת
+                    # Connect to the server via TCP
                     self.connect_to_server(addr[0], server_port)
             except Exception as e:
                 print(f"Error: {e}")
@@ -45,15 +46,15 @@ class GameClient:
                 
             tcp_socket.sendall(pack_request(rounds, self.team_name))
             
-            wins = 0 # מונה ניצחונות
+            wins = 0 # Counter for wins
             
             for i in range(rounds):
                 print(f"\n--- Round {i+1} ---")
-                # הפונקציה מחזירה True אם ניצחנו
+                # The function returns True if we won the round
                 if self.play_round(tcp_socket):
                     wins += 1
             
-            # הדפסת הסיכום לפי דרישות המטלה
+            # Print the summary stats as required by the assignment
             win_rate = wins / rounds if rounds > 0 else 0
             print(f"Finished playing {rounds} rounds, win rate: {win_rate}")
             
@@ -64,7 +65,7 @@ class GameClient:
             print("Game over, listening for new offers...")
 
     def play_round(self, sock):
-        """מנהל סיבוב ומחזיר True לניצחון, False להפסד"""
+        """Manages a single round. Returns True for win, False for loss."""
         cards_received = 0
         while True:
             data = sock.recv(1024)
@@ -79,7 +80,7 @@ class GameClient:
                 self.print_card(rank, suit, cards_received)
                 cards_received += 1
             
-            # בדיקת תוצאה והחזרת ערך בוליאני
+            # Check the game result and return boolean status
             if result != RESULT_ACTIVE:
                 if result == RESULT_WIN:
                     print("You Won! :)")
@@ -89,9 +90,9 @@ class GameClient:
                     return False
                 elif result == RESULT_TIE:
                     print("It's a Tie!")
-                    return False # תיקו לא נחשב ניצחון בחישוב האחוזים
+                    return False # Tie is not considered a win for stats
             
-            # האם לשאול את המשתמש?
+            # Logic to determine when to ask for user input
             if cards_received >= 3 and result == RESULT_ACTIVE:
                 while True:
                     choice = input("Hit or Stand? (h/s): ").lower()
@@ -103,7 +104,7 @@ class GameClient:
                         return self.watch_dealer(sock)
 
     def watch_dealer(self, sock):
-        """צפייה בתור הדילר"""
+        """Passive mode: watch the dealer's turn after Standing"""
         while True:
             data = sock.recv(1024)
             parsed = unpack_server_payload(data)
