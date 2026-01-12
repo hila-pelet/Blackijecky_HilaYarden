@@ -7,19 +7,30 @@ class GameClient:
         print("Client started, listening for offer requests...")
         
     def listen_for_offers(self):
-        udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        udp_socket.bind(('', UDP_PORT))
+        # לולאה אינסופית כדי שהלקוח יחזור להקשיב אחרי כל משחק
+        while True:
+            udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            udp_socket.bind(('', UDP_PORT))
 
-        try:
-            data, addr = udp_socket.recvfrom(1024)
-            result = unpack_offer(data)
-            if result:
-                server_port, server_name = result
-                print(f"Received offer from {server_name} at address {addr[0]}, attempting to connect...")
-                self.connect_to_server(addr[0], server_port)
-        finally:
-            udp_socket.close()
+            try:
+                # האזנה להצעה
+                data, addr = udp_socket.recvfrom(1024)
+                result = unpack_offer(data)
+                
+                if result:
+                    server_port, server_name = result
+                    print(f"Received offer from {server_name} at address {addr[0]}, attempting to connect...")
+                    # סוגרים את ה-UDP לפני שמתחילים לשחק
+                    udp_socket.close()
+                    
+                    # מתחברים לשרת
+                    self.connect_to_server(addr[0], server_port)
+            except Exception as e:
+                print(f"Error: {e}")
+            finally:
+                try: udp_socket.close() 
+                except: pass
 
     def connect_to_server(self, server_ip, server_port):
         try:
@@ -34,79 +45,65 @@ class GameClient:
                 
             tcp_socket.sendall(pack_request(rounds, self.team_name))
             
-            # לולאת הסיבובים
+            wins = 0 # מונה ניצחונות
+            
             for i in range(rounds):
                 print(f"\n--- Round {i+1} ---")
-                self.play_round(tcp_socket)
-                
-            print("Game finished!")
+                # הפונקציה מחזירה True אם ניצחנו
+                if self.play_round(tcp_socket):
+                    wins += 1
+            
+            # הדפסת הסיכום לפי דרישות המטלה
+            win_rate = wins / rounds if rounds > 0 else 0
+            print(f"Finished playing {rounds} rounds, win rate: {win_rate}")
             
         except Exception as e:
             print(f"Connection error: {e}")
         finally:
             tcp_socket.close()
+            print("Game over, listening for new offers...")
 
     def play_round(self, sock):
+        """מנהל סיבוב ומחזיר True לניצחון, False להפסד"""
         cards_received = 0
-        
         while True:
-            # קבלת הודעה מהשרת
             data = sock.recv(1024)
-            if not data: break
+            if not data: return False
             
             parsed = unpack_server_payload(data)
             if not parsed: continue
             
             result, rank, suit = parsed
             
-            # אם קיבלנו קלף אמיתי (לא קלף סיום דמי)
             if rank != 0:
-                suit_names = ['Spades', 'Hearts', 'Diamonds', 'Clubs']
-                rank_names = {1:'Ace', 11:'Jack', 12:'Queen', 13:'King'}
-                r_str = rank_names.get(rank, str(rank))
-                s_str = suit_names[suit] if 0 <= suit <= 3 else '?'
-                
-                # זיהוי למי שייך הקלף לפי הסדר
-                # 2 הראשונים לשחקן, השלישי לדילר. כל השאר תלוי במשחק.
-                if cards_received == 0: print(f"You got: {r_str} of {s_str}")
-                elif cards_received == 1: print(f"You got: {r_str} of {s_str}")
-                elif cards_received == 2: print(f"Dealer got: {r_str} of {s_str}")
-                else: print(f"Card dealt: {r_str} of {s_str}")
-                
+                self.print_card(rank, suit, cards_received)
                 cards_received += 1
             
-            # בדיקת מצב המשחק
+            # בדיקת תוצאה והחזרת ערך בוליאני
             if result != RESULT_ACTIVE:
-                if result == RESULT_WIN: print("You Won! :)")
-                elif result == RESULT_LOSE: print("You Lost! :(")
-                elif result == RESULT_TIE: print("It's a Tie!")
-                break # סוף הסיבוב
+                if result == RESULT_WIN:
+                    print("You Won! :)")
+                    return True
+                elif result == RESULT_LOSE:
+                    print("You Lost! :(")
+                    return False
+                elif result == RESULT_TIE:
+                    print("It's a Tie!")
+                    return False # תיקו לא נחשב ניצחון בחישוב האחוזים
             
-            # לוגיקה מתי לשאול את המשתמש
-            # שואלים רק אחרי שקיבלנו את 3 הקלפים הראשונים, או אחרי כל קלף נוסף שלקחנו
-            # אם זה תור הדילר (אנחנו ב-Stand), אנחנו לא שואלים
-            
-            # ההנחה: אם קיבלנו כרגע קלף והתוצאה עדיין ACTIVE, 
-            # ואנחנו אחרי החלוקה הראשונית (3 קלפים), זה הזמן לשאול.
-            # אבל צריך להיזהר לא לשאול אם אנחנו כבר עשינו Stand.
-            # כאן נשתמש בטריק פשוט: אם הקלף שקיבלנו הוא ה-3 ומעלה, נשאל.
-            # הדילר מתחיל לשחק רק אחרי שעשינו Stand, אז הקליינט שלנו יפסיק לשאול ברגע שנבחר Stand.
-            
-            if cards_received >= 3:
-                # שואלים את המשתמש
+            # האם לשאול את המשתמש?
+            if cards_received >= 3 and result == RESULT_ACTIVE:
                 while True:
                     choice = input("Hit or Stand? (h/s): ").lower()
                     if choice == 'h':
-                        sock.sendall(pack_client_payload("Hittt")) # חייב להיות 5 תווים
-                        break # מחכים לקלף הבא
+                        sock.sendall(pack_client_payload("Hittt"))
+                        break
                     elif choice == 's':
                         sock.sendall(pack_client_payload("Stand"))
-                        # עכשיו נכנסים למצב צפייה בלבד (לולאה פנימית) עד הסוף
-                        self.watch_dealer(sock)
-                        return # סיימנו את הסיבוב הזה בפונקציה הראשית
+                        return self.watch_dealer(sock)
 
     def watch_dealer(self, sock):
-        """פונקציה שרק מדפיסה קלפים עד שהסיבוב נגמר"""
+        """צפייה בתור הדילר"""
         while True:
             data = sock.recv(1024)
             parsed = unpack_server_payload(data)
@@ -115,17 +112,30 @@ class GameClient:
             result, rank, suit = parsed
             
             if rank != 0:
-                suit_names = ['Spades', 'Hearts', 'Diamonds', 'Clubs']
-                rank_names = {1:'Ace', 11:'Jack', 12:'Queen', 13:'King'}
-                r_str = rank_names.get(rank, str(rank))
-                s_str = suit_names[suit] if 0 <= suit <= 3 else '?'
-                print(f"Dealer took: {r_str} of {s_str}")
+                self.print_card(rank, suit, -1)
             
             if result != RESULT_ACTIVE:
-                if result == RESULT_WIN: print("You Won! :)")
-                elif result == RESULT_LOSE: print("You Lost! :(")
-                elif result == RESULT_TIE: print("It's a Tie!")
-                return
+                if result == RESULT_WIN:
+                    print("You Won! :)")
+                    return True
+                elif result == RESULT_LOSE:
+                    print("You Lost! :(")
+                    return False
+                elif result == RESULT_TIE:
+                    print("It's a Tie!")
+                    return False
+        return False
+
+    def print_card(self, rank, suit, index):
+        suit_names = ['Spades', 'Hearts', 'Diamonds', 'Clubs']
+        rank_names = {1:'Ace', 11:'Jack', 12:'Queen', 13:'King'}
+        r_str = rank_names.get(rank, str(rank))
+        s_str = suit_names[suit] if 0 <= suit <= 3 else '?'
+        
+        if index == 0 or index == 1: print(f"You got: {r_str} of {s_str}")
+        elif index == 2: print(f"Dealer got: {r_str} of {s_str}")
+        elif index == -1: print(f"Dealer took: {r_str} of {s_str}")
+        else: print(f"Card dealt: {r_str} of {s_str}")
 
 if __name__ == "__main__":
     GameClient().listen_for_offers()
